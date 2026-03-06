@@ -35,16 +35,16 @@ dnf5 install -y kernel-devel kernel-headers gcc make libglvnd-devel pkgconfig cu
 curl -Lo /tmp/NVIDIA-installer.run "${NVIDIA_RUN_URL}"
 chmod +x /tmp/NVIDIA-installer.run
 
+# Extract everything once (avoids downloading ~400MB twice)
+/tmp/NVIDIA-installer.run --extract-only --target /tmp/nvidia-extract
+rm -f /tmp/NVIDIA-installer.run
+
 KERNEL_NAME=$(ls /usr/src/kernels/ | head -1)
 echo "Compilando contra kernel: ${KERNEL_NAME}"
 
-# The NVIDIA .run installer checks /proc/modules for loaded nvidia modules
-# and aborts in --silent mode if it finds them (host's modules leak into container).
-# We use --no-kernel-modules to install only userspace components,
-# then compile kernel modules separately from source.
-
-# Step 3a: Install userspace components only (no kernel module compilation)
-/tmp/NVIDIA-installer.run \
+# Step 3a: Install userspace components from extracted directory
+# Uses --no-kernel-modules to avoid host /proc/modules detection issue
+/tmp/nvidia-extract/nvidia-installer \
     --silent \
     --no-questions \
     --no-backup \
@@ -56,16 +56,7 @@ echo "Compilando contra kernel: ${KERNEL_NAME}"
     --tmpdir=/tmp \
     || { echo "=== NVIDIA Installer Log ===" ; cat /tmp/nvidia-installer.log ; exit 1 ; }
 
-# Step 3b: Extract and compile kernel modules from the .run file
-# Re-download since the first run consumed/deleted the extracted files
-curl -Lo /tmp/NVIDIA-installer2.run "${NVIDIA_RUN_URL}"
-chmod +x /tmp/NVIDIA-installer2.run
-
-# Extract kernel module source to a fresh directory
-/tmp/NVIDIA-installer2.run --extract-only --target /tmp/nvidia-extract
-rm -f /tmp/NVIDIA-installer2.run
-
-# Build kernel modules
+# Step 3b: Build kernel modules from extracted source
 cd /tmp/nvidia-extract/kernel
 make \
     SYSSRC="/usr/src/kernels/${KERNEL_NAME}" \
@@ -76,14 +67,10 @@ make \
 INSTALL_DIR="/lib/modules/${KERNEL_NAME}/extra/nvidia"
 mkdir -p "${INSTALL_DIR}"
 cp nvidia.ko nvidia-modeset.ko nvidia-uvm.ko nvidia-drm.ko "${INSTALL_DIR}/"
-
-# Run depmod for the target kernel
 depmod -a "${KERNEL_NAME}"
 
 cd /
 rm -rf /tmp/nvidia-extract
-
-rm -f /tmp/NVIDIA-installer.run
 
 # --- Paso 4: Limpiar dependencias de build ---
 dnf5 remove -y kernel-devel kernel-headers gcc make libglvnd-devel cpp || true
